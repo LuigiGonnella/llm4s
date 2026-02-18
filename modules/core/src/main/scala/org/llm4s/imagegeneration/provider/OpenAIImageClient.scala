@@ -52,7 +52,7 @@ class OpenAIImageClient(config: OpenAIConfig, httpClient: HttpClient) extends Im
     prompt: String,
     options: ImageGenerationOptions = ImageGenerationOptions()
   ): Either[ImageGenerationError, GeneratedImage] =
-    generateImages(prompt, 1, options).map(_.head)
+    generateImages(prompt, 1, options).flatMap(_.headOption.toRight(ValidationError("No images returned from OpenAI")))
 
   /**
    * Generate multiple images from a text prompt using OpenAI DALL-E API.
@@ -95,28 +95,36 @@ class OpenAIImageClient(config: OpenAIConfig, httpClient: HttpClient) extends Im
     prompt: String,
     maskPath: Option[Path] = None,
     options: ImageEditOptions = ImageEditOptions()
-  ): Either[ImageGenerationError, Seq[GeneratedImage]] =
-    // Validate image format manually as simple check, real validation happens at API
-    if (!imagePath.toString.toLowerCase.endsWith(".png")) {
-      Left(ValidationError("Image must be a PNG file"))
-    } else {
-      val editUrl = s"${config.baseUrl}/images/edits"
+  ): Either[ImageGenerationError, Seq[GeneratedImage]] = {
+    val validated = for {
+      _             <- validatePrompt(prompt)
+      _             <- validateCount(options.n)
+      openAIOptions <- extractOpenAIEditOptions(options)
+      _             <- validateEditResponseFormat(openAIOptions.responseFormat)
+      sourceSize    <- ImageEditValidationUtils.readImageSize(imagePath, "source image")
+      _             <- ImageEditValidationUtils.validateMaskDimensions(sourceSize, maskPath)
+      requestedSize <- resolveEditOutputSize(options.size, sourceSize)
+      _             <- validateEditSize(requestedSize)
+    } yield (openAIOptions, requestedSize)
 
+    validated.flatMap { case (openAIOptions, requestedSize) =>
+      val editUrl = s"${config.baseUrl}/images/edits"
       val parts = scala.collection.mutable.ListBuffer[MultipartPart](
         MultipartPart.FilePart("image", imagePath, imagePath.getFileName.toString),
         MultipartPart.TextField("prompt", prompt),
         MultipartPart.TextField("n", options.n.toString),
-        options.responseFormat.fold(
-          MultipartPart.TextField("response_format", "b64_json")
-        )(rf => MultipartPart.TextField("response_format", rf))
+        openAIOptions.responseFormat
+          .fold(MultipartPart.TextField("response_format", "b64_json"))(rf =>
+            MultipartPart.TextField("response_format", rf)
+          )
       )
 
-      // Always use dall-e-2 for edits as it's the only supported model for this endpoint
       parts += MultipartPart.TextField("model", "dall-e-2")
-
       maskPath.foreach(path => parts += MultipartPart.FilePart("mask", path, path.getFileName.toString))
-      options.size.foreach(s => parts += MultipartPart.TextField("size", sizeToApiFormat(s)))
-      options.user.foreach(u => parts += MultipartPart.TextField("user", u))
+      parts += MultipartPart.TextField("size", sizeToApiFormat(requestedSize))
+      openAIOptions.user.foreach(u => parts += MultipartPart.TextField("user", u))
+      openAIOptions.quality.foreach(q => parts += MultipartPart.TextField("quality", q))
+      openAIOptions.style.foreach(s => parts += MultipartPart.TextField("style", s))
 
       val result = httpClient
         .postMultipart(
@@ -127,26 +135,64 @@ class OpenAIImageClient(config: OpenAIConfig, httpClient: HttpClient) extends Im
         )
         .toEither
         .left
-        .map(e => UnknownError(e))
+        .map(UnknownError.apply)
 
       result.flatMap { response =>
         if (response.statusCode == 200) {
-          // reuse parseResponse logic but map ImageEditOptions to ImageGenerationOptions for compatibility
           val genOptions = ImageGenerationOptions(
-            size = options.size.fold[ImageSize](ImageSize.Square1024)(s => s), // API default
-            format = ImageFormat.PNG,                                          // Default
-            responseFormat = options.responseFormat,                           // Pass through
+            size = requestedSize,
+            format = ImageFormat.PNG,
+            responseFormat = openAIOptions.responseFormat
           )
           parseResponse(response, prompt, genOptions)
+            .flatMap(images =>
+              Either.cond(
+                images.nonEmpty,
+                images,
+                ValidationError("No images returned from OpenAI image edit endpoint")
+              )
+            )
         } else {
-          handleErrorResponse(response) match {
-            case Left(e) => Left(e)
-            case Right(_) =>
-              Left(UnknownError(new RuntimeException("Unexpected successful response during error handling")))
-          }
+          handleErrorResponse(response).flatMap(_ =>
+            Left(UnknownError(new RuntimeException("Unexpected successful response during error handling")))
+          )
         }
       }
     }
+  }
+
+  private def validateEditResponseFormat(responseFormat: Option[String]): Either[ImageGenerationError, Unit] =
+    responseFormat match {
+      case None                     => Right(())
+      case Some("b64_json" | "url") => Right(())
+      case Some(other)              => Left(ValidationError(s"Unsupported response format for edit: $other"))
+    }
+
+  private def extractOpenAIEditOptions(
+    options: ImageEditOptions
+  ): Either[ImageGenerationError, ProviderImageEditOptions.OpenAI] =
+    options.providerOptions match {
+      case None                                          => Right(ProviderImageEditOptions.OpenAI())
+      case Some(openAI: ProviderImageEditOptions.OpenAI) => Right(openAI)
+      case Some(_) =>
+        Left(ValidationError("Unsupported provider-specific edit options for OpenAI image client"))
+    }
+
+  private def resolveEditOutputSize(
+    requestedSize: Option[ImageSize],
+    sourceSize: ImageSize
+  ): Either[ImageGenerationError, ImageSize] =
+    Right(requestedSize.getOrElse(sourceSize))
+
+  private def validateEditSize(size: ImageSize): Either[ImageGenerationError, Unit] = {
+    val allowedSizes = Set("256x256", "512x512", "1024x1024")
+    val requested    = sizeToApiFormat(size)
+    Either.cond(
+      allowedSizes.contains(requested),
+      (),
+      ValidationError(s"Unsupported edit size '$requested'. Allowed sizes: ${allowedSizes.toSeq.sorted.mkString(", ")}")
+    )
+  }
 
   /**
    * Generate an image asynchronously
@@ -266,6 +312,8 @@ class OpenAIImageClient(config: OpenAIConfig, httpClient: HttpClient) extends Im
       case ImageSize.Portrait512x768    => if (config.model == "dall-e-3") "1024x1792" else "512x512"
       case ImageSize.Landscape1536x1024 => "1792x1024" // Closest matching for DALL-E 3/GPT
       case ImageSize.Portrait1024x1536  => "1024x1792" // Closest matching for DALL-E 3/GPT
+      case ImageSize.Auto               => "auto"
+      case ImageSize.Custom(w, h)       => s"${w}x${h}"
     }
 
   /**

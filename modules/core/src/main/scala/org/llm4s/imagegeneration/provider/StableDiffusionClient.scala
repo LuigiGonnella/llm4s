@@ -4,7 +4,7 @@ import org.llm4s.imagegeneration._
 import org.llm4s.http.HttpResponse
 import org.slf4j.LoggerFactory
 import upickle.default._
-import java.nio.file.{ Files, Path }
+import java.nio.file.Path
 import java.util.Base64
 import scala.util.Try
 import scala.concurrent.{ Future, ExecutionContext, blocking }
@@ -87,7 +87,9 @@ class StableDiffusionClient(config: StableDiffusionConfig, httpClient: HttpClien
     prompt: String,
     options: ImageGenerationOptions = ImageGenerationOptions()
   ): Either[ImageGenerationError, GeneratedImage] =
-    generateImages(prompt, 1, options).map(_.head)
+    generateImages(prompt, 1, options).flatMap(
+      _.headOption.toRight(ValidationError("No images returned from Stable Diffusion"))
+    )
 
   override def generateImages(
     prompt: String,
@@ -140,26 +142,39 @@ class StableDiffusionClient(config: StableDiffusionConfig, httpClient: HttpClien
     maskPath: Option[Path] = None,
     options: ImageEditOptions = ImageEditOptions()
   ): Either[ImageGenerationError, Seq[GeneratedImage]] = {
-    // 1. Read files and convert to Base64
-    val imageBase64 = Try {
-      Base64.getEncoder.encodeToString(Files.readAllBytes(imagePath))
-    }.toEither.left.map(e => ValidationError(s"Failed to read input image: ${e.getMessage}"))
-
-    val maskBase64 = maskPath match {
-      case Some(path) =>
-        Try {
-          Some(Base64.getEncoder.encodeToString(Files.readAllBytes(path)))
-        }.toEither.left.map(e => ValidationError(s"Failed to read mask image: ${e.getMessage}"))
-      case None => Right(None)
+    val providerOptions = options.providerOptions match {
+      case None                                               => Right(ProviderImageEditOptions.StableDiffusion())
+      case Some(sd: ProviderImageEditOptions.StableDiffusion) => Right(sd)
+      case Some(_) =>
+        Left(ValidationError("Unsupported provider-specific edit options for Stable Diffusion image client"))
     }
 
-    // 2. Build payload and execute request
+    def validateDenoisingStrength(value: Option[Double]): Either[ImageGenerationError, Double] = {
+      val resolved = value.getOrElse(0.75)
+      Either.cond(
+        resolved >= 0.0 && resolved <= 1.0,
+        resolved,
+        ValidationError(s"denoisingStrength must be between 0.0 and 1.0, got: $resolved")
+      )
+    }
+
     for {
-      img  <- imageBase64
-      mask <- maskBase64
+      opts              <- providerOptions
+      denoisingStrength <- validateDenoisingStrength(opts.denoisingStrength)
+      sourceImage       <- ImageEditValidationUtils.readImageFile(imagePath, "source image")
+      sourceSize        <- ImageEditValidationUtils.readImageSize(imagePath, "source image")
+      _                 <- ImageEditValidationUtils.validateMaskDimensions(sourceSize, maskPath)
+      img               <- Right(Base64.getEncoder.encodeToString(sourceImage))
+      mask <- maskPath match {
+        case Some(path) =>
+          ImageEditValidationUtils
+            .readImageFile(path, "mask image")
+            .map(bytes => Some(Base64.getEncoder.encodeToString(bytes)))
+        case None => Right(None)
+      }
       // Convert ImageEditOptions to ImageGenerationOptions for response parsing
       genOptions = ImageGenerationOptions(
-        size = options.size.getOrElse(ImageSize.Square512),
+        size = options.size.getOrElse(sourceSize),
         format = ImageFormat.PNG
       )
       payload = StableDiffusionImg2ImgPayload(
@@ -171,7 +186,7 @@ class StableDiffusionClient(config: StableDiffusionConfig, httpClient: HttpClien
         height = genOptions.size.height,
         steps = genOptions.inferenceSteps,
         cfg_scale = genOptions.guidanceScale,
-        denoising_strength = options.strength.getOrElse(0.75),
+        denoising_strength = denoisingStrength,
         batch_size = options.n,
         n_iter = 1,
         seed = genOptions.seed.getOrElse(-1L),
