@@ -285,6 +285,27 @@ class VectorStoreSpec extends AnyWordSpec with Matchers with BeforeAndAfterEach 
       val result = VectorStoreFactory.create("unknown-provider")
       result.isLeft shouldBe true
     }
+
+    "build pgvector config with default credentials" in {
+      val config = VectorStoreFactory.Config.pgvector("jdbc:postgresql://localhost:5432/mydb")
+      config.backend                         shouldBe VectorStoreFactory.Backend.PgVector
+      config.connectionString                shouldBe Some("jdbc:postgresql://localhost:5432/mydb")
+      config.options.get("tableName")        shouldBe Some("vectors")
+      config.options.get("user")             shouldBe Some("postgres")
+      config.options.get("password")         shouldBe Some("")
+    }
+
+    "build pgvector config with explicit credentials" in {
+      val config = VectorStoreFactory.Config.pgvector(
+        connectionString = "jdbc:postgresql://host:5432/db",
+        tableName        = "my_vectors",
+        user             = "alice",
+        password         = "s3cr3t"
+      )
+      config.options.get("tableName") shouldBe Some("my_vectors")
+      config.options.get("user")      shouldBe Some("alice")
+      config.options.get("password")  shouldBe Some("s3cr3t")
+    }
   }
 
   "VectorRecord" should {

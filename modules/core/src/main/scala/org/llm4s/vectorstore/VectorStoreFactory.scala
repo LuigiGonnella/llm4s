@@ -112,10 +112,21 @@ object VectorStoreFactory {
      * Configuration for pgvector.
      *
      * @param connectionString JDBC connection string (jdbc:postgresql://...)
-     * @param tableName Optional table name (default: "vectors")
+     * @param tableName        Table name for vectors (default: "vectors")
+     * @param user             Database user (default: "postgres")
+     * @param password         Database password (default: "")
      */
-    def pgvector(connectionString: String, tableName: String = "vectors"): Config =
-      Config(Backend.PgVector, connectionString = Some(connectionString), options = Map("tableName" -> tableName))
+    def pgvector(
+      connectionString: String,
+      tableName: String = "vectors",
+      user: String = "postgres",
+      password: String = ""
+    ): Config =
+      Config(
+        Backend.PgVector,
+        connectionString = Some(connectionString),
+        options = Map("tableName" -> tableName, "user" -> user, "password" -> password)
+      )
 
     /**
      * Configuration for local Qdrant.
