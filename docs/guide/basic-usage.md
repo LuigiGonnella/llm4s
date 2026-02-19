@@ -330,10 +330,10 @@ For transient failures, implement retry logic:
 def retryWithBackoff[T](maxRetries: Int = 3)(
   operation: () => Result[T]
 ): Result[T] = {
-  (0 until maxRetries).foldLeft(operation()) { (_, attempt) =>
-    if (attempt.isRight) attempt
+  (1 until maxRetries).foldLeft(operation()) { (acc, attempt) =>
+    if (acc.isRight) acc
     else {
-      Thread.sleep(math.pow(2, attempt).toLong * 100)
+      Thread.sleep(math.pow(2, attempt.toDouble).toLong * 100)
       operation()
     }
   }

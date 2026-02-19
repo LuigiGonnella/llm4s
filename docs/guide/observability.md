@@ -78,7 +78,7 @@ for {
   providerConfig <- Llm4sConfig.provider()
   client <- LLMConnect.getClient(providerConfig)
   agent = new Agent(client)
-  tools = ToolRegistry(Seq(...))
+  tools = new ToolRegistry(Seq(...))
   // Traces are automatically sent to Langfuse
   state <- agent.run("Your query", tools)
 } yield state
