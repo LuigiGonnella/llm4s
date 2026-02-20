@@ -160,7 +160,7 @@ final class RAGPipeline private (
       response <- tracedEmbeddingClient.withOperation("query").embed(request)
       _ = { embeddingTokens = response.usage.map(_.totalTokens) }
       queryEmbedding <- response.embeddings.headOption
-        .toRight(EmbeddingError(None, "Embedding provider returned empty embeddings list", "unknown"))
+        .toRight(EmbeddingError(None, "Embedding provider returned empty embeddings list", embeddingModelConfig.name))
         .map(_.map(_.toFloat).toArray)
       results <-
         if (config.useReranker) {

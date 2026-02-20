@@ -949,7 +949,7 @@ final class RAG private (
       .embed(request)
       .flatMap(
         _.embeddings.headOption
-          .toRight(EmbeddingError(None, "Embedding provider returned empty embeddings list", "unknown"))
+          .toRight(EmbeddingError(None, "Embedding provider returned empty embeddings list", embeddingModelConfig.name))
           .map(_.map(_.toFloat).toArray)
       )
   }

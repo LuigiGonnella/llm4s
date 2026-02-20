@@ -96,7 +96,6 @@ class RAGPipelineSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach 
     val pipeline = buildPipeline(provider = new DummyEmbeddingProvider)
     val result   = pipeline.search("what is Scala?")
 
-    result shouldBe a[Right[_, _]]
-    result.getOrElse(fail()) shouldBe empty
+    result.fold(e => fail(s"Expected Right but got Left: ${e.formatted}"), results => results shouldBe empty)
   }
 }
