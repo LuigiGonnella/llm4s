@@ -871,6 +871,29 @@ class RAGWithMocksSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach
   }
 
   // ==========================================================================
+  // RAG.embedQuery empty-embedding path Tests
+  // ==========================================================================
+
+  "RAG.query" should "return EmbeddingError when the embedding provider returns an empty list" in {
+    val emptyEmbeddingClient = new EmbeddingClient(new EmptyEmbeddingProvider)
+    val result = RAG
+      .buildWithClient(RAGConfig.default, emptyEmbeddingClient)
+      .flatMap(_.query("what is Scala?"))
+
+    result.fold(
+      {
+        case embErr: EmbeddingError =>
+          embErr.message should include("empty embeddings")
+          embErr.provider should not be "unknown"
+          embErr.provider shouldBe "text-embedding-3-small"
+        case other =>
+          fail(s"Expected EmbeddingError but got: ${other.getClass.getSimpleName}: ${other.message}")
+      },
+      _ => fail("Expected Left(EmbeddingError) but got Right")
+    )
+  }
+
+  // ==========================================================================
   // RAG.builder Tests
   // ==========================================================================
 

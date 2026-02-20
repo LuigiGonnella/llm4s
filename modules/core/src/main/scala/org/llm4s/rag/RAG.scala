@@ -945,7 +945,13 @@ final class RAG private (
 
   private def embedQuery(query: String): Result[Array[Float]] = {
     val request = EmbeddingRequest(Seq(query), embeddingModelConfig)
-    tracedEmbeddingClient.embed(request).map(_.embeddings.head.map(_.toFloat).toArray)
+    tracedEmbeddingClient
+      .embed(request)
+      .flatMap(
+        _.embeddings.headOption
+          .toRight(EmbeddingError(None, "Embedding provider returned empty embeddings list", embeddingModelConfig.name))
+          .map(_.map(_.toFloat).toArray)
+      )
   }
 
   private def embedBatch(texts: Seq[String]): Result[Seq[Array[Float]]] = {
