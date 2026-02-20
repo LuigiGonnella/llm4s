@@ -950,7 +950,27 @@ final class RAG private (
 
   private def embedBatch(texts: Seq[String]): Result[Seq[Array[Float]]] = {
     val request = EmbeddingRequest(texts, embeddingModelConfig)
-    tracedEmbeddingClient.embed(request).map(_.embeddings.map(_.map(_.toFloat).toArray))
+    tracedEmbeddingClient.embed(request).flatMap { response =>
+      if (response.embeddings.isEmpty) {
+        Left(
+          EmbeddingError(
+            None,
+            "Embedding provider returned empty embeddings list",
+            embeddingModelConfig.name
+          )
+        )
+      } else if (response.embeddings.length != texts.length) {
+        Left(
+          EmbeddingError(
+            None,
+            s"Embedding provider returned ${response.embeddings.length} embeddings for batch of ${texts.length} texts",
+            embeddingModelConfig.name
+          )
+        )
+      } else {
+        Right(response.embeddings.map(_.map(_.toFloat).toArray))
+      }
+    }
   }
 
   private def searchWithStrategy(
